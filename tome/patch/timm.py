@@ -15,9 +15,10 @@ import torch
 from timm.models.vision_transformer import Attention, Block, VisionTransformer
 
 from tome.merge import merge_source, merge_wavg
-from tome.merge.LSHMerger import bipartite_soft_matching
+from tome.merge import LSHMerger
 from tome.utils import parse_r
 
+lm=LSHMerger()
 
 class ToMeBlock(Block):
     """
@@ -41,7 +42,7 @@ class ToMeBlock(Block):
         r = self._tome_info["r"].pop(0)
         if r > 0:
             # Apply ToMe here
-            merge, _ = bipartite_soft_matching(
+            merge, _ = lm.bipartite_soft_matching(
                 metric,
                 r,
                 self._tome_info["class_token"],
