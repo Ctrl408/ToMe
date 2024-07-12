@@ -11,6 +11,109 @@ from typing import Callable, Tuple
 import torch
 
 
+import math
+import random
+from typing import Callable, Tuple
+
+import torch
+import torch.nn as nn
+
+
+class LSHMerger(nn.Module):
+    def __init__(self, r: int = 8, num_buckets: int = 5, e_param: int = 4, similarity_metric: str = 'cosine'):
+        super(LSHMerger, self).__init__()
+        self.r = r
+        self.num_buckets = num_buckets
+        self.e_param = e_param
+        self.similarity_metric = similarity_metric
+
+    def _hash(self, x, projections):
+        projections = projections.to(x.device)
+        return (torch.einsum('btf,hf->bht', x, projections) > 0).float()
+
+    def _l2_norm(self, x):
+        return nn.functional.normalize(x, p=2, dim=-1)
+
+    def _compute_similarity(self, bucket):
+        if self.similarity_metric == 'dot_product':
+            return torch.einsum('bif,bjf->bij', bucket, bucket)
+        elif self.similarity_metric == 'cosine':
+            norm_bucket = self._l2_norm(bucket)
+            return torch.einsum('bif,bjf->bij', norm_bucket, norm_bucket)
+        elif self.similarity_metric == 'softmax':
+            similarity_matrix = torch.einsum('bif,bjf->bij', bucket, bucket)
+            return torch.softmax(similarity_matrix, dim=-1)
+        elif self.similarity_metric == 'angular':
+            norm_bucket = self._l2_norm(bucket)
+            cosine_similarity = torch.einsum('bif,bjf->bij', norm_bucket, norm_bucket)
+            return 1 - torch.acos(cosine_similarity) / math.pi
+        elif self.similarity_metric == 'pearson':
+            mean = torch.mean(bucket, dim=-1, keepdim=True)
+            bucket_centered = bucket - mean
+            norm_bucket_centered = bucket_centered / bucket_centered.norm(dim=-1, keepdim=True)
+            return torch.einsum('bif,bjf->bij', norm_bucket_centered, norm_bucket_centered)
+        elif self.similarity_metric == 'euclidean':
+            distances = torch.cdist(bucket, bucket, p=2)
+            return 1 / (1 + distances)
+        else:
+            raise ValueError(f"Unknown similarity metric: {self.similarity_metric}")
+
+    def bipartite_soft_matching(
+        self, metric: torch.Tensor, r: int, class_token: bool = False, distill_token: bool = False
+    ) -> Tuple[Callable, Callable]:
+        protected = 0
+        if class_token:
+            protected += 1
+        if distill_token:
+            protected += 1
+
+        t = metric.shape[1]
+        r = min(r, (t - protected) // 2)
+
+        if r <= 0:
+            return do_nothing, do_nothing
+
+        batch_size, num_tokens, num_features = metric.shape
+        num_hashes = num_tokens
+        projections = torch.randn(num_hashes, num_features, device=metric.device)
+
+        metric = self._l2_norm(metric)
+        hash_codes = self._hash(metric, projections)
+
+        _, sorted_indices = hash_codes.sum(dim=-1).sort(dim=1)
+        sorted_metric = metric.gather(dim=1, index=sorted_indices.unsqueeze(-1).expand(-1, -1, num_features))
+
+        bucket_size = (num_tokens + self.num_buckets - 1) // self.num_buckets
+        buckets = sorted_metric.split(bucket_size, dim=1)
+        selected_indices = random.sample(range(len(buckets)), min(self.e_param, len(buckets)))
+        merged_buckets = []
+
+        for i, bucket in enumerate(buckets):
+            if i in selected_indices and bucket.size(1) >= self.r:
+                similarity_matrix = self._compute_similarity(bucket)
+                similarity_scores, _ = similarity_matrix.triu(diagonal=1).max(dim=-1)
+                top_r_indices = similarity_scores.topk(self.r, dim=1, largest=True).indices
+                top_r_tokens = bucket.gather(dim=1, index=top_r_indices.unsqueeze(-1).expand(-1, -1, num_features))
+                merged_token = top_r_tokens.mean(dim=1, keepdim=True)
+                merged_buckets.append(merged_token)
+                remaining_tokens = bucket[:, self.r:, :]
+                merged_buckets.append(remaining_tokens)
+            else:
+                merged_buckets.append(bucket)
+
+        merged_tokens = torch.cat(merged_buckets, dim=1)
+
+        def merge(x: torch.Tensor, mode="mean") -> torch.Tensor:
+            return merged_tokens
+
+        def unmerge(x: torch.Tensor) -> torch.Tensor:
+            return sorted_metric
+
+        return merge, unmerge
+
+
+
+
 def do_nothing(x, mode=None):
     return x
 
