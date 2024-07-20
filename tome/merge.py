@@ -20,7 +20,7 @@ import torch.nn as nn
 
 
 class LSHMerger(nn.Module):
-    def __init__(self, r: int = 8, num_buckets: int = 5, e_param: int = 4, similarity_metric: str = 'cosine'):
+    def __init__(self, r: int = 8, num_buckets: int = 50, e_param: int = 1, similarity_metric: str = 'cosine'):
         super(LSHMerger, self).__init__()
         self.r = r
         self.num_buckets = num_buckets
