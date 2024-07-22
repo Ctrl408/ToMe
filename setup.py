@@ -11,7 +11,7 @@ setup(
     name="tome",
     version="0.1",
     author="Meta",
-    url="https://github.com/facebookresearch/tome",
+    url="https://github.com/Ctrl408/ToMe",
     description="Token Merging for Vision Transformers",
     install_requires=[
         "torchvision",
